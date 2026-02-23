@@ -30,7 +30,7 @@ def ask_yes_no(prompt: str, default_yes: bool = True) -> bool:
     return ans.startswith("y")
 
 
-def parse_date_loop(prompt: str) -> core.date:
+def parse_date_loop(prompt: str):
     while True:
         s = ask(prompt)
         try:
@@ -92,7 +92,7 @@ def choose_disciplines(rows) -> set[str]:
 
 
 def main():
-    print("\nUBB timetable to .ics (curl fetch, interactive CLI)\n")
+    print("\nUBB timetable → .ics (curl fetch, interactive CLI)\n")
 
     url = ask_required("Timetable URL")  # required, no default
     tz_name = ask("Timezone (IANA, e.g. Europe/Bucharest)", core.DEFAULT_TZ)
@@ -110,11 +110,10 @@ def main():
 
     vacations = ask_vacations()
 
-    # Repeatable mode: week marker is a single recurring all-day event called "WEEK" (no numbering).
     add_week_markers = ask_yes_no(
-        "Add recurring week marker event (all-day 'WEEK' on Mondays)?", default_yes=True
+        "Add WEEK number markers? (standalone all-day on teaching Mondays)",
+        default_yes=True,
     )
-
     out = ask("Output .ics filename", core.DEFAULT_OUT)
 
     print(f"\nFetching timetable via curl:\n  {url}\n")

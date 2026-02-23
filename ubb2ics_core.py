@@ -60,7 +60,11 @@ def parse_time_interval(s: str) -> tuple[time, time]:
 
 
 def parse_frequency(freq: str) -> int | None:
-    # None => weekly, 1 => sapt. 1 (odd teaching weeks), 2 => sapt. 2 (even teaching weeks)
+    """
+    None => weekly
+    1 => sapt. 1 (odd teaching weeks)
+    2 => sapt. 2 (even teaching weeks)
+    """
     f = norm(freq).lower()
     if not f:
         return None
@@ -71,6 +75,33 @@ def parse_frequency(freq: str) -> int | None:
 def stable_uid(seed: str) -> str:
     h = hashlib.sha1(seed.encode("utf-8")).hexdigest()
     return f"{h[:16]}@ubb2ics"
+
+
+def pseudo_uuid(seed: str) -> str:
+    """
+    Deterministic UUID-ish string from sha1.
+    Used for Apple alarm UID fields.
+    """
+    h = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def append_no_alarm_valarm(lines: list[str], seed: str) -> None:
+    """
+    Apple-style 'no alert' sentinel.
+    This is the most reliable way to prevent Apple Calendar from applying default alerts on import.
+    """
+    alarm_uid = pseudo_uuid("alarm|" + seed)
+    lines += [
+        "BEGIN:VALARM",
+        f"X-WR-ALARMUID:{alarm_uid}",
+        f"UID:{alarm_uid}",
+        "TRIGGER;VALUE=DATE-TIME:19760401T005545Z",
+        "X-APPLE-DEFAULT-ALARM:TRUE",
+        "X-APPLE-LOCAL-DEFAULT-ALARM:TRUE",
+        "ACTION:NONE",
+        "END:VALARM",
+    ]
 
 
 def ics_escape(s: str) -> str:
@@ -207,10 +238,12 @@ def parse_rows(html: str):
 
 
 def in_vacation_week(monday: date, vacations: list[tuple[date, date]]) -> bool:
+    """
+    Vacation week if vacation overlaps ANY day in that Mon–Sun week.
+    """
     week_start = monday
-    week_end = monday + timedelta(days=6)  # Sunday
+    week_end = monday + timedelta(days=6)
     for a, b in vacations:
-        # overlap if max(start) <= min(end)
         if max(week_start, a) <= min(week_end, b):
             return True
     return False
@@ -303,17 +336,6 @@ def generate_ics(
     selected: set[str],
     add_week_markers: bool,
 ) -> str:
-    """
-    Recurring events (RRULE):
-
-    Weekly rows:
-      - RRULE:FREQ=WEEKLY;UNTIL=...
-      - EXDATE for vacation weeks (local TZID)
-
-    Biweekly rows (sapt 1/2 parity shifts across vacations):
-      - Split into contiguous teaching segments
-      - RRULE:FREQ=WEEKLY;INTERVAL=2 within each segment
-    """
     teaching_mondays_all = build_teaching_mondays(sem_start, sem_end, vacations)
     if not teaching_mondays_all:
         raise RuntimeError("No teaching weeks after applying vacations.")
@@ -328,13 +350,13 @@ def generate_ics(
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//ubb2ics-cli//EN",
+        "PRODID:-//ubb2ics//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
     ]
 
+    # ✅ Numbered week markers: standalone all-day events on teaching Mondays only
     if add_week_markers:
-        # teaching_mondays_all already excludes vacation-overlapping weeks
         for i, mon in enumerate(teaching_mondays_all, 1):
             uid = stable_uid(f"week-marker|{mon.isoformat()}|{url}")
             lines += [
@@ -344,8 +366,9 @@ def generate_ics(
                 f"SUMMARY:{ics_escape(f'WEEK {i}')}",
                 f"DTSTART;VALUE=DATE:{format_date(mon)}",
                 f"DTEND;VALUE=DATE:{format_date(mon + timedelta(days=1))}",
-                "END:VEVENT",
             ]
+            append_no_alarm_valarm(lines, uid)
+            lines += ["END:VEVENT"]
 
     for r in rows:
         if r["disciplina"] not in selected:
@@ -369,7 +392,7 @@ def generate_ics(
         desc_parts.append(f"Source: {url}")
         description = "\\n".join(desc_parts)
 
-        # WEEKLY
+        # WEEKLY recurring
         if freq_parity is None:
             first_week_monday = monday_on_or_after(sem_start)
             first_occ = first_week_monday + timedelta(days=day_offset)
@@ -404,10 +427,12 @@ def generate_ics(
             if norm(r["sala"]):
                 lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
             lines.append(f"DESCRIPTION:{ics_escape(description)}")
+
+            append_no_alarm_valarm(lines, uid)
             lines.append("END:VEVENT")
             continue
 
-        # BIWEEKLY parity-shifting => segment series
+        # BIWEEKLY with parity-shift across vacations -> one RRULE per contiguous teaching segment
         for seg in segs:
             seg_end_monday = seg[-1]
 
@@ -433,7 +458,6 @@ def generate_ics(
 
             dtstart_local = datetime.combine(first_occ_date, start_t)
             dtend_local = datetime.combine(first_occ_date, end_t)
-
             until_seg_utc = format_dt_utc(
                 datetime.combine(seg_last_occ_date, time(23, 59, 59)), tz
             )
@@ -455,6 +479,8 @@ def generate_ics(
             if norm(r["sala"]):
                 lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
             lines.append(f"DESCRIPTION:{ics_escape(description)}")
+
+            append_no_alarm_valarm(lines, uid)
             lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")
