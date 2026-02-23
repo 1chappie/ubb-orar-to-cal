@@ -89,7 +89,6 @@ def pseudo_uuid(seed: str) -> str:
 def append_no_alarm_valarm(lines: list[str], seed: str) -> None:
     """
     Apple-style 'no alert' sentinel.
-    This is the most reliable way to prevent Apple Calendar from applying default alerts on import.
     """
     alarm_uid = pseudo_uuid("alarm|" + seed)
     lines += [
@@ -118,7 +117,6 @@ def format_date(d: date) -> str:
 
 
 def format_dt_local(dt_local: datetime) -> str:
-    # Local "YYYYMMDDTHHMMSS" (no Z)
     return dt_local.strftime("%Y%m%dT%H%M%S")
 
 
@@ -150,7 +148,6 @@ def fetch_html(url: str) -> str:
     return p.stdout
 
 
-# first table -> rows
 class FirstTableParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -262,10 +259,6 @@ def build_teaching_mondays(
 
 
 def teaching_segments(teaching_mondays: list[date]) -> list[list[date]]:
-    """
-    Split teaching mondays into contiguous segments where consecutive mondays are 7 days apart.
-    Each vacation gap creates a new segment.
-    """
     if not teaching_mondays:
         return []
     segs = [[teaching_mondays[0]]]
@@ -312,9 +305,6 @@ def exdates_for_weekly_local(
     sem_start: date,
     sem_end: date,
 ) -> list[str]:
-    """
-    Build EXDATE values in LOCAL time (to match DTSTART;TZID=...).
-    """
     ex = []
     cur = monday_on_or_after(sem_start)
     while cur <= sem_end:
@@ -355,7 +345,7 @@ def generate_ics(
         "METHOD:PUBLISH",
     ]
 
-    # ✅ Numbered week markers: standalone all-day events on teaching Mondays only
+    # Numbered week markers: standalone all-day events on teaching Mondays only
     if add_week_markers:
         for i, mon in enumerate(teaching_mondays_all, 1):
             uid = stable_uid(f"week-marker|{mon.isoformat()}|{url}")
@@ -382,15 +372,9 @@ def generate_ics(
         prefix = TIP_PREFIX.get(tip, tip.upper() if tip else "")
         summary = f"{prefix} {r['disciplina']}".strip()
 
-        desc_parts = []
-        if norm(r["cadru"]):
-            desc_parts.append(f"Teacher: {norm(r['cadru'])}")
-        if norm(r["frecventa"]):
-            desc_parts.append(
-                f"Frequency: {norm(r['frecventa'])} (odd/even teaching weeks)"
-            )
-        desc_parts.append(f"Source: {url}")
-        description = "\\n".join(desc_parts)
+        # ✅ DESCRIPTION: teacher only (omit if empty)
+        teacher = norm(r["cadru"])
+        description_line = f"DESCRIPTION:{ics_escape(teacher)}" if teacher else None
 
         # WEEKLY recurring
         if freq_parity is None:
@@ -426,7 +410,8 @@ def generate_ics(
 
             if norm(r["sala"]):
                 lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
-            lines.append(f"DESCRIPTION:{ics_escape(description)}")
+            if description_line:
+                lines.append(description_line)
 
             append_no_alarm_valarm(lines, uid)
             lines.append("END:VEVENT")
@@ -478,7 +463,8 @@ def generate_ics(
             ]
             if norm(r["sala"]):
                 lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
-            lines.append(f"DESCRIPTION:{ics_escape(description)}")
+            if description_line:
+                lines.append(description_line)
 
             append_no_alarm_valarm(lines, uid)
             lines.append("END:VEVENT")
