@@ -2,17 +2,10 @@
 
 This project converts a UBB timetable HTML table into an iCalendar `.ics` file you can import into any calendar client.
 
-## Files
-
-- `ubb2ics_core.py`  
-  Logic: fetch HTML, parse table, compute teaching weeks, generate `.ics`
-- `ubb2ics_cli.py`  
-  Interactive CLI wrapper for configuring everything and writing the `.ics`
-
 ## Requirements
 
 - **Python 3.9+** (uses `zoneinfo`)
-- `curl` available in PATH (default on macOS)
+- `curl` available in PATH
 
 ## Usage
 
@@ -22,3 +15,10 @@ This project converts a UBB timetable HTML table into an iCalendar `.ics` file y
 3. Enter the start and end dates of any vacation periods (from the year structure)
 4. Selected disciplines as needed
 5. Generate the ics file and import it into your calendar client
+
+## Files
+
+- `ubb2ics_core.py`  
+  Logic: fetch HTML, parse table, compute teaching weeks, generate `.ics`
+- `ubb2ics_cli.py`  
+  Interactive CLI wrapper for configuring everything and writing the `.ics`
