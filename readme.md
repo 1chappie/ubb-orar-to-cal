@@ -16,9 +16,9 @@ This project converts a UBB timetable HTML table into an iCalendar `.ics` file y
 
 ## Usage
 
-- Run `ubb2ics_cli.py` and follow prompts:
-  1. Enter URL of your timetable (from https://www.cs.ubbcluj.ro/files/orar/2025-2/tabelar/)
-  2. Enter start and end dates of the semester (from https://www.cs.ubbcluj.ro/invatamant/structura-anului-universitar/)
-  3. Enter start and end dates of any vacation periods (from the year structure)
-  4. Toggle disciplines on/off as needed
-  5. Generate the ics file and import it into your calendar client
+0. Run `python ubb2ics_cli.py` and follow prompts:
+1. Enter the URL of your timetable (from https://www.cs.ubbcluj.ro/files/orar/2025-2/tabelar/)
+2. Enter the start and end dates of the semester (from https://www.cs.ubbcluj.ro/invatamant/structura-anului-universitar/)
+3. Enter the start and end dates of any vacation periods (from the year structure)
+4. Selected disciplines as needed
+5. Generate the ics file and import it into your calendar client
