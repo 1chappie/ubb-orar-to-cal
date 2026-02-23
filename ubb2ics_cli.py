@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import sys
-import re
 from zoneinfo import ZoneInfo
 
 import ubb2ics_core as core
@@ -54,8 +53,6 @@ def ask_vacations() -> list[tuple[core.date, core.date]]:
         s = input(f"Vacation #{len(vacs)+1}: ").strip()
         if not s:
             break
-
-        # Split on ".." then parse each side flexibly
         parts = s.split("..")
         if len(parts) != 2:
             print("  Invalid format. Example: 06-04-2026..12-04-2026")
@@ -66,11 +63,9 @@ def ask_vacations() -> list[tuple[core.date, core.date]]:
         except Exception:
             print("  Invalid dates. Example: 06-04-2026..12-04-2026")
             continue
-
         if b < a:
             a, b = b, a
         vacs.append((a, b))
-
     return vacs
 
 
@@ -97,9 +92,9 @@ def choose_disciplines(rows) -> set[str]:
 
 
 def main():
-    print("\nUBB timetable → .ics (curl fetch, interactive CLI)\n")
+    print("\nUBB timetable to .ics (curl fetch, interactive CLI)\n")
 
-    url = ask_required("Timetable URL")  # no default
+    url = ask_required("Timetable URL")  # required, no default
     tz_name = ask("Timezone (IANA, e.g. Europe/Bucharest)", core.DEFAULT_TZ)
 
     try:
@@ -115,9 +110,11 @@ def main():
 
     vacations = ask_vacations()
 
+    # Repeatable mode: week marker is a single recurring all-day event called "WEEK" (no numbering).
     add_week_markers = ask_yes_no(
-        "Add WEEK number markers? (on Mondays)", default_yes=True
+        "Add recurring week marker event (all-day 'WEEK' on Mondays)?", default_yes=True
     )
+
     out = ask("Output .ics filename", core.DEFAULT_OUT)
 
     print(f"\nFetching timetable via curl:\n  {url}\n")

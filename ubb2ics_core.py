@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import re
-import sys
 import hashlib
 import subprocess
 from html.parser import HTMLParser
@@ -61,7 +60,7 @@ def parse_time_interval(s: str) -> tuple[time, time]:
 
 
 def parse_frequency(freq: str) -> int | None:
-    # None => weekly, 1 => sapt. 1, 2 => sapt. 2
+    # None => weekly, 1 => sapt. 1 (odd teaching weeks), 2 => sapt. 2 (even teaching weeks)
     f = norm(freq).lower()
     if not f:
         return None
@@ -85,6 +84,11 @@ def ics_escape(s: str) -> str:
 
 def format_date(d: date) -> str:
     return d.strftime("%Y%m%d")
+
+
+def format_dt_local(dt_local: datetime) -> str:
+    # Local "YYYYMMDDTHHMMSS" (no Z)
+    return dt_local.strftime("%Y%m%dT%H%M%S")
 
 
 def format_dt_utc(dt_local: datetime, tz: ZoneInfo) -> str:
@@ -203,8 +207,11 @@ def parse_rows(html: str):
 
 
 def in_vacation_week(monday: date, vacations: list[tuple[date, date]]) -> bool:
+    week_start = monday
+    week_end = monday + timedelta(days=6)  # Sunday
     for a, b in vacations:
-        if a <= monday <= b:
+        # overlap if max(start) <= min(end)
+        if max(week_start, a) <= min(week_end, b):
             return True
     return False
 
@@ -221,7 +228,23 @@ def build_teaching_mondays(
     return mondays
 
 
-# Subject selection helpers (still useful to keep in core)
+def teaching_segments(teaching_mondays: list[date]) -> list[list[date]]:
+    """
+    Split teaching mondays into contiguous segments where consecutive mondays are 7 days apart.
+    Each vacation gap creates a new segment.
+    """
+    if not teaching_mondays:
+        return []
+    segs = [[teaching_mondays[0]]]
+    for m in teaching_mondays[1:]:
+        prev = segs[-1][-1]
+        if (m - prev).days == 7:
+            segs[-1].append(m)
+        else:
+            segs.append([m])
+    return segs
+
+
 def parse_selection(expr: str, n: int) -> set[int]:
     expr = norm(expr)
     if not expr:
@@ -249,7 +272,27 @@ def list_disciplines(rows) -> list[str]:
     return sorted({r["disciplina"] for r in rows})
 
 
-# ICS generation
+def exdates_for_weekly_local(
+    vacations: list[tuple[date, date]],
+    weekday_offset: int,
+    start_t: time,
+    sem_start: date,
+    sem_end: date,
+) -> list[str]:
+    """
+    Build EXDATE values in LOCAL time (to match DTSTART;TZID=...).
+    """
+    ex = []
+    cur = monday_on_or_after(sem_start)
+    while cur <= sem_end:
+        if in_vacation_week(cur, vacations):
+            occ = cur + timedelta(days=weekday_offset)
+            if sem_start <= occ <= sem_end:
+                ex.append(format_dt_local(datetime.combine(occ, start_t)))
+        cur += timedelta(days=7)
+    return ex
+
+
 def generate_ics(
     rows,
     url: str,
@@ -260,13 +303,27 @@ def generate_ics(
     selected: set[str],
     add_week_markers: bool,
 ) -> str:
-    teaching_mondays = build_teaching_mondays(sem_start, sem_end, vacations)
-    if not teaching_mondays:
-        raise RuntimeError(
-            "No teaching weeks after applying vacations. Check semester dates/vacations."
-        )
+    """
+    Recurring events (RRULE):
 
+    Weekly rows:
+      - RRULE:FREQ=WEEKLY;UNTIL=...
+      - EXDATE for vacation weeks (local TZID)
+
+    Biweekly rows (sapt 1/2 parity shifts across vacations):
+      - Split into contiguous teaching segments
+      - RRULE:FREQ=WEEKLY;INTERVAL=2 within each segment
+    """
+    teaching_mondays_all = build_teaching_mondays(sem_start, sem_end, vacations)
+    if not teaching_mondays_all:
+        raise RuntimeError("No teaching weeks after applying vacations.")
+
+    week_num_by_monday = {m: i + 1 for i, m in enumerate(teaching_mondays_all)}
+    segs = teaching_segments(teaching_mondays_all)
+
+    tzid = getattr(tz, "key", None) or str(tz)
     now_utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    until_sem_end_utc = format_dt_utc(datetime.combine(sem_end, time(23, 59, 59)), tz)
 
     lines = [
         "BEGIN:VCALENDAR",
@@ -276,10 +333,10 @@ def generate_ics(
         "METHOD:PUBLISH",
     ]
 
-    # Week markers: all-day events on Mondays for teaching weeks only
     if add_week_markers:
-        for i, mon in enumerate(teaching_mondays, 1):
-            uid = stable_uid(f"week-marker|{mon.isoformat()}")
+        # teaching_mondays_all already excludes vacation-overlapping weeks
+        for i, mon in enumerate(teaching_mondays_all, 1):
+            uid = stable_uid(f"week-marker|{mon.isoformat()}|{url}")
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:{uid}",
@@ -290,7 +347,6 @@ def generate_ics(
                 "END:VEVENT",
             ]
 
-    # Course events: one VEVENT per actual occurrence
     for r in rows:
         if r["disciplina"] not in selected:
             continue
@@ -303,41 +359,102 @@ def generate_ics(
         prefix = TIP_PREFIX.get(tip, tip.upper() if tip else "")
         summary = f"{prefix} {r['disciplina']}".strip()
 
-        for week_num, week_mon in enumerate(teaching_mondays, 1):
-            if not parity_ok(freq_parity, week_num):
+        desc_parts = []
+        if norm(r["cadru"]):
+            desc_parts.append(f"Teacher: {norm(r['cadru'])}")
+        if norm(r["frecventa"]):
+            desc_parts.append(
+                f"Frequency: {norm(r['frecventa'])} (odd/even teaching weeks)"
+            )
+        desc_parts.append(f"Source: {url}")
+        description = "\\n".join(desc_parts)
+
+        # WEEKLY
+        if freq_parity is None:
+            first_week_monday = monday_on_or_after(sem_start)
+            first_occ = first_week_monday + timedelta(days=day_offset)
+            if first_occ < sem_start:
+                first_occ += timedelta(days=7)
+            if first_occ > sem_end:
                 continue
 
-            occ_date = week_mon + timedelta(days=day_offset)
-            if occ_date < sem_start or occ_date > sem_end:
-                continue
-
-            dtstart_local = datetime.combine(occ_date, start_t)
-            dtend_local = datetime.combine(occ_date, end_t)
+            dtstart_local = datetime.combine(first_occ, start_t)
+            dtend_local = datetime.combine(first_occ, end_t)
 
             uid = stable_uid(
-                f"{summary}|{occ_date.isoformat()}|{r['orele']}|{r['sala']}|{r['cadru']}"
+                f"weekly|{summary}|{r['orele']}|{r['sala']}|{r['cadru']}|{url}"
             )
-
-            desc_parts = []
-            if norm(r["cadru"]):
-                desc_parts.append(f"Teacher: {norm(r['cadru'])}")
-            if norm(r["frecventa"]):
-                desc_parts.append(
-                    f"Frequency: {norm(r['frecventa'])} (odd/even teaching weeks)"
-                )
-            desc_parts.append(f"Source: {url}")
 
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:{uid}",
                 f"DTSTAMP:{now_utc}",
                 f"SUMMARY:{ics_escape(summary)}",
-                f"DTSTART:{format_dt_utc(dtstart_local, tz)}",
-                f"DTEND:{format_dt_utc(dtend_local, tz)}",
+                f"DTSTART;TZID={tzid}:{format_dt_local(dtstart_local)}",
+                f"DTEND;TZID={tzid}:{format_dt_local(dtend_local)}",
+                f"RRULE:FREQ=WEEKLY;UNTIL={until_sem_end_utc}",
+            ]
+
+            ex = exdates_for_weekly_local(
+                vacations, day_offset, start_t, sem_start, sem_end
+            )
+            if ex:
+                lines.append(f"EXDATE;TZID={tzid}:" + ",".join(ex))
+
+            if norm(r["sala"]):
+                lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
+            lines.append(f"DESCRIPTION:{ics_escape(description)}")
+            lines.append("END:VEVENT")
+            continue
+
+        # BIWEEKLY parity-shifting => segment series
+        for seg in segs:
+            seg_end_monday = seg[-1]
+
+            first_monday = None
+            for m in seg:
+                wn = week_num_by_monday[m]
+                if parity_ok(freq_parity, wn):
+                    first_monday = m
+                    break
+            if first_monday is None:
+                continue
+
+            first_occ_date = first_monday + timedelta(days=day_offset)
+            if first_occ_date < sem_start:
+                while first_occ_date < sem_start:
+                    first_occ_date += timedelta(days=7)
+            if first_occ_date > sem_end:
+                continue
+
+            seg_last_occ_date = seg_end_monday + timedelta(days=day_offset)
+            if seg_last_occ_date > sem_end:
+                seg_last_occ_date = sem_end
+
+            dtstart_local = datetime.combine(first_occ_date, start_t)
+            dtend_local = datetime.combine(first_occ_date, end_t)
+
+            until_seg_utc = format_dt_utc(
+                datetime.combine(seg_last_occ_date, time(23, 59, 59)), tz
+            )
+
+            uid = stable_uid(
+                f"biweekly|p={freq_parity}|seg={seg[0].isoformat()}|"
+                f"{summary}|{r['orele']}|{r['sala']}|{r['cadru']}|{url}"
+            )
+
+            lines += [
+                "BEGIN:VEVENT",
+                f"UID:{uid}",
+                f"DTSTAMP:{now_utc}",
+                f"SUMMARY:{ics_escape(summary)}",
+                f"DTSTART;TZID={tzid}:{format_dt_local(dtstart_local)}",
+                f"DTEND;TZID={tzid}:{format_dt_local(dtend_local)}",
+                f"RRULE:FREQ=WEEKLY;INTERVAL=2;UNTIL={until_seg_utc}",
             ]
             if norm(r["sala"]):
                 lines.append(f"LOCATION:{ics_escape(norm(r['sala']))}")
-            lines.append(f"DESCRIPTION:{ics_escape('\\n'.join(desc_parts))}")
+            lines.append(f"DESCRIPTION:{ics_escape(description)}")
             lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")
